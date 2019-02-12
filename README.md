@@ -1,6 +1,6 @@
 # Prediction survivors
 
-** Criação de um modelo para prever quais passageiros sobreviveriam a tragédia.
+** Criação de um modelo para prever quais passageiros sobreviveriam ou não a uma tragédia.
 
 Workflow de execução:
 
