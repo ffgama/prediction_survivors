@@ -14,4 +14,4 @@ Workflow de execução:
 
 (v) model.R
 
-(vi) model_tree.R (opcional)
+(vi) model_tree.R (adicional)
