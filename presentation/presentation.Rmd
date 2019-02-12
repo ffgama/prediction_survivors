@@ -1,0 +1,1136 @@
+---
+title: "Construção de um modelo preditivo para Seguradora Thomas Andrews"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+A primeira etapa consiste na extração dos dados disponibilizados (dados de treino e teste).
+
+```{r}
+train <- read.csv('data/train.csv', header = TRUE, sep = ",")
+test <- read.csv('data/test.csv', header = TRUE, sep = ",")
+```
+
+Verificando a estrutura do dataset. Dados de treino possuem 936 observações enquanto os dados de teste 418 observações sem a presença do target (Survived).
+
+```{r}
+str(train)
+str(test)
+```
+
+Em seguida iremos transformar os dados, procurando inconsistência adicionando/removendo variáveis, identificando e tratando instâcias não preenchidas, duplicatas e assim por diante. Primeiramente iremos reordernar as colunas.
+
+```{r}
+# reordenar colunas
+train <-train[,c(1,3:ncol(train),2)] 
+
+# verificando e eliminando registros duplicados 
+any(duplicated(train$passengerid))
+
+# extrai apenas os registros únicos
+train <- train[!duplicated(train$passengerid),]
+
+# observando a existência de duplicatas em todas as colunas
+sapply(train, function(x) any(duplicated(x)))
+
+```
+
+Adicionaremos NA para a nova coluna (Survived) no conjunto de teste. O dataset de teste será importante também para a análise descritiva/exploratória, por isso faremos a junção com o dataset de treino.
+
+```{r}
+
+# adicionar NA na nova coluna do dataset test
+test$Survived <- NA
+
+# unificando nome das colunas de treino x teste
+colnames(train) <- colnames(test)
+
+# unindo os datasets para as etapas de pré-processamento e seleção de features
+full_dataset <- rbind(train, test)
+
+```
+
+Removeremos a primeira coluna e verificamos a estrutura do dataset. A variável sexo possui algumas instâncias com o mesmo significado porém descritas de forma diferente assim como campos em branco. Homogeneizamos essas instâncias e atribuímos NA onde estiver vazio.
+
+```{r}
+# remover features que não interessam para a análise exploratória nem para construção do modelo (id)
+full_dataset <- full_dataset[,-c(1)]
+
+# modificando tipo e padronizando as instâncias
+str(full_dataset)
+
+# classe da passagem
+full_dataset$Pclass <- as.factor(full_dataset$Pclass)
+
+# nome 
+full_dataset$Name <- as.character(full_dataset$Name)
+
+levels(full_dataset$Sex)[c(2,4,5,6,12,13)]
+
+# sexo 
+levels(full_dataset$Sex)[c(2,4,5,6,12,13)] <- c("female")
+levels(full_dataset$Sex)[c(3:8)] <- c("male")
+levels(full_dataset$Sex)[1] <- NA
+
+# idade
+full_dataset$Age <- as.integer(full_dataset$Age)
+
+# cabine 
+full_dataset$Cabin <- as.character(full_dataset$Cabin)
+
+# embarque
+levels(full_dataset$Embarked)[1] <- NA
+
+```
+
+
+```{r}
+
+# verificar o resumo estatístico de cada variável 
+summary(full_dataset)
+
+```
+
+Parece que há uma um outlier em Age, vamos analisar a distribuição.
+
+```{r}
+library(ggplot2)
+# plotando em um histograma
+ggplot(data=full_dataset, aes(Age)) + geom_histogram(bins = 30) +  theme_minimal()
+
+```
+
+```{r}
+# checando as instâncias em Age acima de 100 e substituindo por NA
+full_dataset[(full_dataset$Age > 110 & !(is.na(full_dataset$Age))), ]$Age <- c(NA)
+```
+
+```{r}
+
+```
+
+É possível também um encontrar um possível outlier no Fare.
+
+```{r}
+# Fare
+ggplot(data=full_dataset, aes(Fare)) + geom_histogram(bins = 30) +  theme_minimal()
+```
+
+Pelo menos 4 passageiros pagaram um valor bem elevado no ticket pesquisas adicionais apontam que de fato esse preço poderia ter sido pago por alguns passageiros como foi o caso de Cardeza, Mrs. James Warburton Martinez (Charlotte Wardle Drake) [Encyclopedia-Titanica]: https://www.encyclopedia-titanica.org/titanic-survivor/charlotte-cardeza.html 
+
+```{r}
+full_dataset[(full_dataset$Fare > 450 & !(is.na(full_dataset$Fare))), ]
+```
+
+Checando os valores ausentes das colunas numéricas. Quase todas as variáveis numéricas possuem valores ausentes. Podemos ignorar Survived por que refere-se a imputação que fizemos acima.
+
+```{r}
+sapply(full_dataset, function(x) sum(is.na(x)))
+```
+
+Agora podemos verificar as variáveis categóricas. Note que cabin possui aproximadamente 77,4% de dados ausentes, apesar de ser potencialmente relevante pode ser que tenhamos que removê-la.
+
+```{r}
+nrow(full_dataset[full_dataset$Cabin == "",])/nrow(full_dataset)
+# a coluna nome está totalmente preenchida
+nrow(full_dataset[full_dataset$Name == "",])/nrow(full_dataset)
+# a coluna ticket está totalmente preenchida
+nrow(full_dataset[full_dataset$Ticket == "",])/nrow(full_dataset)
+```
+
+Com base na análise de instânicas ausentes poderemos destacar algumas variáveis:
+- Pclass = 9 instâncias
+- Sex = 45 instâncias
+- Age = 265 instâncias
+- Fare = 1 instância
+- Cabin = 1014 instâncias
+- Embarked = 2 instâncias
+
+As variáveis que possuem uma quantidade menor de instâncias faremos uma imputação manual verificando o valor mais razoável que poderá ser atribuído. A priori não queremos perder nenhuma informação, primeiro vamos trabalhar na variável sexo:
+
+```{r}
+# carregando as instãncias não preenchidas da variável
+full_dataset[!complete.cases(full_dataset$Sex),]
+```
+
+É possível obter o sexo através da coluna **Name**, vamos quebrar essa variável.
+
+```{r}
+att_dataset <- NULL
+for(ind in 1:length(full_dataset$Pclass)){
+  full_dataset$LastName[ind] <- c(att_dataset, strsplit(as.character(full_dataset$Name), ",", fixed = TRUE))[[ind]][1]
+  full_dataset$Name[ind] <- c(att_dataset, strsplit(as.character(full_dataset$Name), ",", fixed = TRUE))[[ind]][2]
+}
+
+# reordenar colunas
+full_dataset <- full_dataset[,c(1,2,12,3:11)]
+head(full_dataset)
+
+# vamos filtrar novamente apenas aquelas instâncias onde o sexo não está preenchido
+library(stringr)
+
+for(row in 1:nrow(full_dataset)){
+  
+  if (is.na(full_dataset$Sex)[row]){
+    if(str_detect(full_dataset$Name[row], fixed("Mrs."))  | str_detect(full_dataset$Name[row], fixed("Miss.")) | str_detect(full_dataset$Name[row], fixed("Ms.")) | str_detect(full_dataset$Name[row], fixed("the Countess."))) 
+    {
+      full_dataset$Sex[row] <- c("female")
+    }else{
+      full_dataset$Sex[row] <- c("male")
+    }
+  }
+}
+
+
+```
+
+Analisando a variável **Cabin**. Grande parte (aprox. 87%) das cabines cadastradas são de primeira classe.
+
+```{r}
+table(subset(full_dataset, !Cabin == "", c(Pclass, Cabin))$Pclass)
+```
+```{r}
+# verificar as instâncias não preenchidas de Pclass
+full_dataset[is.na(full_dataset$Pclass),]
+```
+
+Identificar se a coluna Ticket pode ajudar a preencher a coluna Pclass. É bem provável que os passageiros sejam da própria familia (conjuge) pagaram o mesmo valor na passagem e embarcaram do mesmo lugar. Assim atribuímos o mesmo Pclass.
+
+```{r}
+full_dataset[full_dataset$Ticket == "113789",]
+# atribuindo o pclass
+full_dataset[full_dataset$Ticket == "113789",][[1]][1] <- 1
+```
+
+Analisando o **Pclass**. 
+Provavelmente ambos são da mesma familia. SibSp e Parch tem o valor zero. Também pagaram pelo mesmo o  mesmo valor no ticket e embarcaram no mesmo local. Por isso, atribuímos o mesmo Pclass.
+
+```{r}
+full_dataset[full_dataset$Ticket == "C.A. 33595",]
+full_dataset[full_dataset$Ticket == "C.A. 33595",][[1]][1] <- 2
+```
+
+Analisando o **Ticket**. 
+É possível perceber que este passageiro compõe uma cabine preenchida, o que aumenta a probabilidade de pertencer a primeira classe. Além de possuir outros atributos semelhantes a outros passageiros com mesmo ticket. Atribuímos o mesmo Pclass.
+
+```{r}
+full_dataset[full_dataset$Ticket == "PC 17582",]
+full_dataset[full_dataset$Ticket == "PC 17582",][[1]][2] <- 1
+```
+
+Vamos a outro passageiro.
+
+```{r}
+# outro passageiro
+full_dataset[full_dataset$Ticket == "315089",]
+
+```
+
+Apenas um único registro. Podemos olhar para duas variáveis principais: a primeira o preço do ticket é baixo e poderia indicar que este passageiro está na classe 3. Também poderemos buscar pelo LastName algum possível parantesco familiar.
+
+```{r}
+full_dataset[full_dataset$LastName == "Cacic",]
+```
+
+Detectamos que todos que carregam o mesmo sobrenome estão na classe 3. Por isso, atribuímos a classe 3.
+
+```{r}
+full_dataset[full_dataset$Ticket == "315089",][[1]][1] <- 3
+```
+
+Vamos a outro passageiro.
+
+```{r}
+full_dataset[full_dataset$Ticket == "31027",]
+```
+
+Parece que este passageiro está mesmo na classe 2, quando observamos as outras variáveis.
+
+```{r}
+full_dataset[full_dataset$Ticket == "31027",][[1]][1] <- 2
+```
+
+Próximo passageiro.
+
+```{r}
+full_dataset[full_dataset$Ticket == "31028",]
+```
+
+Pelo preço talvez este passageiro esteja alocado na classe 3. Vamos observar o LastName. 
+
+```{r}
+full_dataset[full_dataset$LastName == "Gavey",]
+
+```
+
+Não ajudou muito, é o único com este LastName. Pesquisas externas apontam que ele embarcou na classe 2.
+
+```{r}
+full_dataset[full_dataset$Ticket == "31028",][[1]][1] <- 2
+```
+
+Vamos aos próximos pclass não preenchidos.
+
+```{r}
+full_dataset[is.na(full_dataset$Pclass),]
+```
+
+Temos ainda três passageiros sem Pclass.
+
+```{r}
+full_dataset[full_dataset$Ticket == "36864",]
+```
+
+O preço pode indicar que este passageiro esteve na classe 3. Vamos ao Last Lame.
+
+```{r}
+full_dataset[full_dataset$LastName == "Gallagher",]
+```
+
+Da mesma maneira que no caso anterior o passageiro é o único com este sobrenome. Pesquisas externas confirmam nossa suposição de que ele viajou na classe 3.
+
+```{r}
+full_dataset[full_dataset$Ticket == "36864",][[1]][1] <- 3
+```
+
+Próximo passageiro.
+
+```{r}
+full_dataset[full_dataset$Ticket == "347082",]
+```
+
+Os resultados indicam uma alta probabilidade de ser da classe 3, especialmente pelo parantesco.
+
+```{r}
+full_dataset[full_dataset$Ticket == "347082",][[1]][6] <- 3
+```
+
+Nosso último passageiro.
+
+```{r}
+full_dataset[full_dataset$Ticket == "11751",]
+```
+
+Não existem informações suficientes para concluir sobre a classe desse passageiro. Vamos ao LastName.
+
+```{r}
+full_dataset[full_dataset$LastName == "Beckwith",]
+```
+
+Parece que existe um vínculo entre os passageiros em questão assim podemos atribuir a classe 1.
+
+```{r}
+full_dataset[full_dataset$Ticket == "11751",][[1]][2] <- 1
+```
+
+Atualizando nossa tabela de instâncias não preenchidas:
+
+- Pclass = 9 instâncias (OK)
+- Sex = 45 instâncias (OK)
+- Age = 265 instâncias
+- Fare = 1 instância
+- Cabin = 1014 instâncias
+- Embarked = 2 instâncias
+
+Manualmente poderemos também preencher as instâncias das variáveis Fare e Embarked.
+
+Vamos a **Fare**, primeiramente. 
+
+```{r}
+full_dataset[!complete.cases(full_dataset$Fare),]
+```
+
+Temos algumas pistas que podem ser úteis para setar um valor para esta instância. Observe a Pclass igual a 3. Vamos verificar os valores extremos pagos por passageiros desta classe.
+
+Note no histograma que grande parte dos valores para Fare situam-se entre 10 e 20.
+
+```{r}
+extract_subset <- subset(full_dataset, full_dataset$Pclass == 3, select = c(Pclass,LastName,Embarked,Fare))
+
+# plotando em um histograma
+ggplot(data=extract_subset, aes(Fare)) + geom_histogram(bins = 10) +  theme_minimal()
+
+```
+
+Vamos observar outras colunas. LastName não oferece nenhuma informação adicional.
+
+```{r}
+extract_subset[extract_subset$LastName == "Storey",]
+```
+
+Total de pesssoas que embarcaram em Southampton.s
+
+```{r}
+nrow(extract_subset[extract_subset$Embarked == "S",])
+```
+
+Certo, mas qual o preço médio do ticket cobrado por lá?
+
+```{r}
+extract_embarked_s <- extract_subset[extract_subset$Embarked == "S",]
+
+summary(extract_embarked_s)
+
+```
+
+Nesse caso, seria interessante olhar para a mediana do que a média por conta dos valores discrepantes. Assim,temos que a mediana da variável é 8.05. Considerando que o preço da tarifa para esse passageiro não seja tão diferente dos demais vamos verificar quais são os preços mais comumentes praticados.
+
+```{r}
+df_freq_fare<-data.frame(table(extract_embarked_s$Fare))
+colnames(df_freq_fare) <- c("fare",'freq')
+df_freq_fare[order(df_freq_fare$freq, decreasing = TRUE),]
+```
+
+Observe que além da mediana os valores entre 7 e 8 são mais comuns. Decidimos setar a mediana para esta instância.
+
+```{r}
+full_dataset[!complete.cases(full_dataset$Fare),][,c("Fare")] <- median(extract_embarked_s$Fare, na.rm = TRUE)
+```
+
+Dando prosseguimento iremos avaliar as instâncias de **Embarked**.
+
+```{r}
+full_dataset[!complete.cases(full_dataset$Embarked),]
+```
+
+Checando a coluna LastName, na tentativa de identificar pistas de vinculos familiares que podem indicar que embarcaram de um mesmo local. Nenhuma informação adicional.
+
+```{r}
+full_dataset[full_dataset$LastName == "Icard",]
+```
+```{r}
+full_dataset[full_dataset$LastName == "Stone",]
+```
+
+Será que o número do ticket poderia ajudar? Ambos tem o mesmo número de ticket.
+Aparentemente não.
+
+```{r}
+full_dataset[full_dataset$Ticket == "113572",]
+```
+
+O preço do ticket pode ser útil para indicar o local de embarque?
+Também não.
+
+```{r}
+full_dataset[full_dataset$Fare == 80,]
+```
+
+Qual o local mais comum de embarque?
+Hum, Southampton.
+
+```{r}
+# Em termos de proporção aproximadamente 70% dos embarques são feitos por lá.
+prop.table(table(full_dataset$Embarked))
+```
+
+Buscamos essa informação externamente e realmente constatamos que ambos desembarcaram em Southampton. Assim, podemos preencher essa instância de forma mais segura.
+
+```{r}
+full_dataset[!complete.cases(full_dataset$Embarked),][,c("Embarked")] <- c("S","S")
+```
+
+Atualizando as variáveis para preenchimento:
+
+- Pclass = 9 instâncias (OK)
+- Sex = 45 instâncias (OK)
+- Age = 265 instâncias
+- Fare = 1 instância (OK)
+- Cabin = 1014 instâncias
+- Embarked = 2 instâncias (OK)
+
+Restaram apenas duas variáveis: **Age** e **Cabin**. Sabemos que a idade pode ser um fator importante de sobrevivência. A cabine também poderia ser uma informação importante. No entanto, temos uma quantidade imensa de valores não preenchidas. Assim decidimos, nessa primeira análise, remover a variável **Cabin**. Além disso, entendemos que a Pclass poderia amenizar a ausência da variável Cabin uma vez que a Pclass pode fornecer uma noção da posição espacial dos passageiros no navio.
+
+Para a variável **Age** realizaremos a imputação utilizando uma abordagem preditiva utilizando o KNN.
+
+```{r}
+full_dataset <- subset(full_dataset, select = c(Pclass:Fare, Embarked:Survived))
+
+# realizando a imputação com o KNN
+library(DMwR)
+sub_full_dataset <- full_dataset[,c("Pclass","Sex","Age","Fare","Embarked")]
+
+# convertendo atributos categóricos em numéricos
+sub_full_dataset$Sex <- ifelse(sub_full_dataset$Sex == "male", 1, 2)
+levels(sub_full_dataset$Embarked) <- c(1,2,3)
+sub_full_dataset$Age <- as.integer(sub_full_dataset$Age)
+
+full_dataset_transf <- knnImputation(sub_full_dataset, k = 10, scale = T)
+full_dataset_transf$Age <- as.integer(full_dataset_transf$Age)
+
+```
+
+Vamos verificar quão diferente ficou a distribuição após a imputação dos dados na variável Age.
+A imputação manteve uma distribuição dos dados bem aproximada do conjunto de dados original. 
+
+
+```{r}
+# Antes
+summary(full_dataset$Age)
+cat("\n")
+# Depois
+summary(full_dataset_transf$Age)
+```
+
+Agora finalizaremos a etapa de transformação ajustando o nosso dataset.
+
+```{r}
+full_dataset$Age <- full_dataset_transf$Age
+
+# agora podemos selecionar somente as variáveis que interessam para o restante das etapas.
+str(full_dataset)
+
+full_dataset_transformed <- subset(full_dataset, select = c(Pclass,Sex,Age,SibSp,Parch,Fare,Embarked,Survived))
+```
+
+Neste momento começaremos a realizar explorações no dataset a fim de ter uma melhor compreensão a respeito dos dados.
+
+**Dicionário de dados**
+
+- survived: passageiro sobreviveu ou não? (0 = Não, 1 = Sim)
+- pclass: classe da passagem no navio. (1 = primeira classe, 2 = classe executiva, 3 = classe econômica)
+- name: nome do passageiro
+- sex: gênero do passageiro 
+- sibsp: número de irmãos/companheiros dentro do navio
+- parch: número de parentes e filhos no navio ticket
+- ticket: código da passagem
+- fare: valor da passagem
+- cabin: número da cabine
+- embarked: local onde o titanic embarcou. (C = Cherbourg, Q = Queenstown, S = Southampton)
+
+
+```{r}
+
+library(dplyr)
+library(knitr)
+library(ggplot2)
+library(gridExtra)
+
+full_dataset_transformed %>%
+  na.omit() %>%  mutate(Survived = ifelse(Survived == 1, "Yes", "No")) %>% 
+  ggplot(aes(x = Survived, fill = factor(Survived))) +
+  geom_bar(stat="count") +
+  ggtitle("Qual o número de sobreviventes do titanic? ") +
+  geom_label(stat = "count", aes(label=..count..)) +
+  scale_x_discrete(limits=c("No","Yes")) + 
+  xlab("Sobrevivência (0 = Não / 1 = Sim)") + ylab("Total de Ocorrências") +
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1))
+
+prop_surv <- full_dataset_transformed %>%
+  na.omit() %>%
+  count(Survived) %>%
+  mutate(prop = n / sum(n))
+
+kable(prop_surv)
+
+```
+
+Nosso primeiro insight é de que o percentual de pessoas que sobreviveram ao desastre foi de apenas 38%. Enquanto que pessoas que não sobreviveram representam mais de 60% do dataset.
+
+Observando o **Pclass**.
+
+```{r}
+
+# Pclass
+plot_pclass <- full_dataset_transformed %>%
+  na.omit() %>% mutate(Survived = ifelse(Survived == 1, "Yes", "No")) %>%
+  ggplot(aes(Pclass, fill = Survived)) + 
+  geom_bar() + 
+  ggtitle("Pclass") +
+  geom_text(aes(label=..count..),stat="count",position=position_stack(0.9)) + 
+  labs(fill='Survived') +
+  xlab("Class") + ylab("Total") +
+  facet_wrap(~Pclass, scale = "free") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1))
+
+prop_surv <- full_dataset_transformed %>%
+  na.omit() %>%
+  count(Survived, Pclass) %>%
+  group_by(Pclass) %>%
+  mutate(prop = n / sum(n)) %>% arrange(desc(Survived))
+
+kable(prop_surv)
+
+# SibSP
+plot_sibsp <- full_dataset_transformed %>%
+  na.omit() %>% mutate(Survived = ifelse(Survived == 1, "Yes", "No")) %>%
+  ggplot(aes(SibSp, fill = Survived)) + 
+  geom_bar() + 
+  ggtitle("SibSp") +
+  xlab("SibSp") + ylab("Total") +
+  geom_text(aes(label=..count..),stat="count",position=position_stack(0.5)) + 
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1))
+  
+# Parch
+plot_parch <- full_dataset_transformed %>%
+  na.omit() %>% mutate(Survived = ifelse(Survived == 1, "Yes", "No")) %>%
+  ggplot(aes(Parch, fill = Survived)) + 
+  geom_bar() + 
+  ggtitle("Parch") +
+  xlab("Parch") + ylab("Total") +
+  geom_text(aes(label=..count..),stat="count",position=position_stack(0.5)) + 
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1))
+
+# Fare
+plot_fare <- full_dataset_transformed %>%
+  na.omit() %>% mutate(Survived = ifelse(Survived == 1, "Yes", "No")) %>%
+  ggplot(aes(Fare, fill = Survived)) + 
+  geom_histogram(bins =  30) +
+  scale_fill_manual(values=c("#000000", "#95b2f0")) + 
+  ggtitle("Fare") +
+  xlab("Fare") + ylab("Total") +
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1))
+
+grid.arrange(plot_pclass, plot_sibsp, plot_parch, plot_fare, nrow = 2)
+
+```
+
+Analisando os gráficos, podemos concluir que:
+
+1) **Pclass**:
+
+- A classe 3 possui o maior número de passageiros. é possível perceber que houve um maior número de fatalidades nas classes menos privilegiadas. A primeira classe foi a única que houve maior número de sobreviventes. De fato, em termos proporcionais constata-se que grande parte dos passageiros da primeira classe sobreviveram enquanto que a taxa de sobrevivência é baixa para os passageiros da terceira classe apenas (24% aprox.) sobreviveram.  
+
+2) **SibSp**:
+
+- Grande parte dos passageiros não possuem irmãos/companheiros. Curioso notar que o número de sobreviventes foi maior em situações onde os passageiros estiveram acompanhados de 1 irmão/companheiro.
+
+
+3) **Parch**:
+
+- uma quantidade mais equilibrada entre sobreviventes foi alcançada quando os passageiros  estiveram acompanhados de parentes/filhos. O que faz sentido quando pensamos que, em situações de emergência, crianças tiveram prioridade.
+
+4) **Fare**:
+
+- Boa parte dos passageiros pagaram até 100 pelo ingresso. Em geral, a proporção de sobreviventes aumentou junto com o preço do ingresso. Esse insight está relacionado com o que foi obtido na variável pclass. Parece que houve prioridade de emergência a passageiros que pagaram mais pela passagem (ou estiveram em classes superiores). Sem comentar o fato de que a primeira classe ficasse em localização privilegiada (parte superior do navio).
+
+
+Continuaremos nossa análise agora observando outras variáveis.
+
+```{r}
+
+# Embarked
+plot_embarked <-  full_dataset_transformed %>%
+  na.omit() %>% mutate(Survived = ifelse(Survived == 1, "Yes", "No")) %>%
+  ggplot(aes(Embarked, fill = Survived)) + 
+  geom_bar() + 
+  ggtitle("Embarked") +
+  xlab("Embarked") + ylab("Total") +
+  geom_text(aes(label=..count..),stat="count",position=position_stack(0.5)) + 
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1))
+
+prop_surv <- full_dataset_transformed %>%
+  na.omit() %>%
+  count(Survived, Embarked) %>%
+  group_by(Embarked) %>%
+  mutate(prop = n / sum(n)) %>% arrange(desc(Survived))
+
+kable(prop_surv)
+
+# Classe do Embarque
+plot_embarked_pclass <- full_dataset_transformed %>%
+  na.omit() %>% mutate(Survived = ifelse(Survived == 1, "Yes", "No")) %>%
+  ggplot(aes(Embarked, fill = factor(Pclass))) + 
+  geom_bar() + 
+  scale_fill_manual(values=c("#fd9b89", "#fa8072", "#dd6c6c")) + 
+  ggtitle("Pclass x Embarked") +
+  xlab("Embarked") + ylab("Total") +
+  geom_text(aes(label=..count..),stat="count",position=position_stack(0.5)) + 
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1))
+
+
+grid.arrange(plot_embarked, plot_embarked_pclass, nrow = 1)
+
+```
+
+Analisando os gráficos, podemos concluir que:
+
+1) **Embarked**:
+
+- A quantidade de sobreviventes foi maior que o número de fatalidades apenas para passageiros que embarcaramem em C (Cherbourg). Podemos mergulhar um pouco a fim de observar a Pclass mais frequentes dos passageiros que embarcaram em C.  
+
+2) **Embarked x Pclass**:
+
+- Analisando a classe dos embarques, concluimos que o embarque de passageiros em C (Cherbourg) obteve  a menor quantidade de passageiros da classe 3 o que pode ter contribuído para minimizar o percentual de mortalidade de passageiros que embarcaram neste local.
+
+Agora vamos avaliar o **Sexo** em relação a cada classe de sobrevivência.
+
+```{r}
+
+# Sex
+plot_sex <- full_dataset_transformed %>%
+  na.omit() %>% mutate(Survived = ifelse(Survived == 1, "Yes", "No")) %>%
+  ggplot(aes(Sex, fill = Survived)) + 
+  geom_bar() + 
+  ggtitle("Sex") +
+  scale_fill_manual(values=c("#e4888b", "#4773aa")) + 
+  geom_text(aes(label=..count..),stat="count",position=position_stack(0.9)) + 
+  labs(fill='Survived') +
+  xlab("Sex") + ylab("Total") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1))
+
+prop_surv <- full_dataset_transformed %>%
+  na.omit() %>%
+  count(Survived, Sex) %>%
+  group_by(Sex) %>%
+  mutate(prop = n / sum(n)) %>% arrange(desc(Survived))
+
+kable(prop_surv)
+
+# Pclass x Sex
+plot_sex_class <- full_dataset_transformed %>%
+  na.omit() %>% mutate(Survived = ifelse(Survived == 1, "Yes", "No")) %>%
+  ggplot(aes(Pclass, fill = factor(Survived))) + 
+  geom_bar() + 
+  ggtitle("Pclass x Sex") +
+  scale_fill_manual(values=c("#e4888b", "#4773aa")) + 
+  labs(fill='Survived') +
+  xlab("Class") + ylab("Total") +
+  facet_wrap(~Sex, scale = "free") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1))
+
+# Age (taxa de sobrevivência)
+plot_age <- full_dataset_transformed %>%
+  na.omit() %>% mutate(Survived = ifelse(Survived == 1, "Yes", "No")) %>%
+  ggplot(aes(x = Age, fill = Survived)) +
+  geom_density(alpha=0.5, aes(fill=factor(Survived))) + 
+  ggtitle("Sobrevivência em função da idade") +
+  scale_fill_manual(values=c("#e4888b", "#4773aa")) + 
+  scale_x_continuous() + 
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Age x Sex
+plot_age_class <- full_dataset_transformed %>%
+  na.omit() %>% mutate(Survived = ifelse(Survived == 1, "Yes", "No")) %>%
+  ggplot(aes(Sex, Age, fill = factor(Survived))) + 
+  geom_boxplot() + 
+  ggtitle("Age x Sex") +
+  labs(fill='Survived') +
+  facet_wrap(~Sex, scale = "free") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1))
+
+
+grid.arrange(plot_sex, plot_sex_class, plot_age, plot_age_class, nrow = 2)
+
+```
+
+Analisando os gráficos, podemos concluir que:
+
+1) **Sex**:
+
+- Claramente percebemos que passageiros do sexo feminino tiveram uma taxa de sobrevivência maior que os passageiros do sexo masculino. Em termos proporcionais, 74% de mulheres aproximadamente sobreviveram enquanto que no lado masculino apenas 19% aprox. sobreviveram.
+
+2) **Pclass x Sex**:
+
+- Grande parte das mulheres das classes 1 e 2 sobreviveram. 
+
+3) **Age**:
+
+- A curva de densidade demonstra que crianças possuem a maior taxa de sobrevivência. Enquanto que para adultos acima de 30 anos, a curva de densidade oscilou em torno da média. Por fim, os maiores picos de mortalidade ficaram entre jovens adultos entre 25-30 anos.
+
+4) **Age x Sex**:
+
+- Entre os sobreviventes do sexo feminino a média da idade é mais alta. O que poderia indicar a existências de mães. Assim, é provável que as mamães e seus filhos tiveram prioridade nas situações mais tensas.
+
+Para uma compreensão final a respeito dos dados, podemos analisar a correlação entre eles.
+
+```{r}
+library(ggcorrplot)
+
+full_dataset_cor <- full_dataset_transformed %>%
+  na.omit() 
+
+full_dataset_cor <- as.data.frame(sapply(full_dataset_cor, function(x) as.numeric(x)))
+
+full_dataset_cor %>%
+  cor(full_dataset_cor) %>% round(digits = 1) %>%
+  ggcorrplot(hc.order = TRUE, 
+             type = "lower", 
+             lab = TRUE, 
+             title = "Correlação entre as variáveis",
+             lab_size = 3, 
+             method="square", 
+             colors =c("#00344c", "#66cfff", "#00344c"), 
+             ggtheme=theme_minimal() + theme(plot.title = element_text(hjust = 0.5)))
+```
+
+Note que o gráfico sugere que as variáveis mais correlacionadas a **Survived** são: **Sex**, **Fare** e **Pclass**. A correlação entre as outras variáveis demonstra que:
+
+- Parch possui maior correlação com SibSp. O que faz sentido, já que ambas estão relacionadas ao contexto família.
+- Age possui maior correlação com Pclass.
+- Fare possui maior correlação com Pclass.
+
+A partir dessas análises explorátorias já temos uma boa noção do conjunto de dados. Então vamos pensar na etapa que antecede a construção do modelo: a seleção de features. Utilizaremos o algoritmo de eliminação recursiva (RFE) para selecionar as melhores features.
+
+```{r}
+library(caret)
+
+# selecionaremos os dados que utilizaremos nessa etapa
+select_data_train <- full_dataset_transformed %>% na.omit()
+
+select_data_train$Survived <- as.factor(select_data_train$Survived)
+
+dim(select_data_train)
+
+ctr_rfe <- rfeControl(functions=rfFuncs, method="cv", number=10)
+
+set.seed(123)
+
+# algoritmo para seleção das melhores features para o modelo
+rfe_algorithm <- rfe(select_data_train[,1:(ncol(select_data_train)-1)], select_data_train[,c(ncol(select_data_train))], sizes=c(1:(ncol(select_data_train)-1)), 
+                     rfeControl=ctr_rfe)
+
+
+```
+
+Conjunto de variáveis selecionadas
+
+```{r}
+print(rfe_algorithm)
+```
+
+Quando listamos as features selecionadas percebemos que o modelo manteve 4 variáveis principais. 
+
+```{r}
+predictors(rfe_algorithm)
+```
+
+Graficamente podemos ver o desempenho: o valor máximo de acurácia foi alcançado com um conjunto de 4 variáveis.
+
+```{r}
+plot(rfe_algorithm, type=c("g", "o"))
+```
+
+Vamos passar as features selecionadas para um novo objeto.
+
+```{r}
+data_selected <- full_dataset_transformed %>% select(predictors(rfe_algorithm))
+data_selected$Survived <- full_dataset_transformed$Survived
+```
+
+Agora entraremos na etapa de criação do modelo. Antes, iremos avaliar um conjunto de modelos que poderíamos selecionar, condunzindo um benchmark. Primeiramente vamos dividir nosso conjunto de dados de treino x teste.
+
+```{r}
+data_selected_train <- data_selected[!is.na(data_selected$Survived),]
+data_selected_train$Survived <- as.factor(data_selected_train$Survived)
+
+# 70% treinamento 
+size_sample <-  floor(0.7 * nrow(data_selected_train))
+
+set.seed(123)
+# particionamento randômico
+train_ind <- sample(seq_len(nrow(data_selected_train)), size_sample)
+
+# dados de treinamento e teste
+data_train <- data_selected_train[train_ind, ]
+data_test <- data_selected_train[-train_ind, ]
+
+library(mlr)
+library(dplyr)
+
+train_task <- makeClassifTask(data = data_train, target = "Survived")
+test_task <- makeClassifTask(data = data_test, target = "Survived")
+
+all_learners = list(
+  # Random Forest
+  makeLearner("classif.randomForest", id = "Random Forest", predict.type = "prob"),
+  # Árvore de decisão
+  makeLearner("classif.rpart", id = "RPART", predict.type = "prob"),
+  # KNN
+  makeLearner("classif.kknn", id = "KNN", predict.type = "prob"),
+  # Linear Discriminant Analysis	
+  makeLearner("classif.lda", id = "LDA", predict.type = "prob"),
+  # SVM
+  makeLearner("classif.ksvm", id = "SVM",predict.type = "prob"),
+  # Naive Bayes
+  makeLearner("classif.naiveBayes", id = "Naive Bayes", predict.type = "prob"),
+  # Rede Neural
+  makeLearner("classif.nnet", id = "Neural Net", predict.type = "prob")
+)
+
+```
+
+Agora definimos o método de reamostragem e as medidas de avaliação de perfomance (acurácia e roc). Por fim, passamos isso para a função construir e avaliar a perfomance dos modelos.
+
+```{r}
+# reamostragem
+rdesc <- makeResampleDesc("CV", iters = 10)
+
+# medidas que serão utilizadas
+meas <- list(acc, auc)
+
+# Definindo o benchmark 
+bmr <- benchmark(learners = all_learners, tasks = train_task, resamplings = rdesc, measures = meas, show.info = FALSE)
+
+```
+
+Criaremos plots para demonstrar a perfomance de todos os modelos. Observe que, dentre os modelos testados o Random Forest foi um dos mais estáveis tanto em termos de acurácia quanto em roc.
+
+```{r}
+
+library(gridExtra)
+library(ggplot2)
+
+plot_acc<-plotBMRBoxplots(bmr, measure = acc, order.lrns = getBMRLearnerIds(bmr)) + 
+  ggtitle("Perfomance dos modelos (Acurácia)") +
+  aes(fill = learner.id) +
+  guides(fill = FALSE) + 
+  theme_test() +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1))
+
+plot_auc<-plotBMRBoxplots(bmr, measure = auc, order.lrns = getBMRLearnerIds(bmr)) + 
+  ggtitle("Perfomance dos modelos (Análise ROC)") +
+  aes(fill = learner.id) + 
+  theme_test() +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1))
+
+# Acc
+table_acc <- getBMRAggrPerformances(bmr, as.df = TRUE) %>%
+  select(Modelo = learner.id, Acurácia = acc.test.mean) %>%
+  mutate(Acurácia = round(Acurácia, 4))  %>%
+  arrange(desc(Acurácia))
+
+# Roc
+table_roc <- getBMRAggrPerformances(bmr, as.df = TRUE) %>%
+  select(Modelo = learner.id, ROC = auc.test.mean) %>%
+  mutate(ROC = round(ROC, 4))  %>%
+  arrange(desc(ROC))
+
+grid.arrange(plot_acc, plot_auc,
+  tableGrob(table_acc, theme=ttheme_default()),
+  tableGrob(table_roc, theme=ttheme_default()),
+  nrow = 2)
+
+```
+
+Assim, decidimos utilizar o Random Forest para construção do modelo. O primeiro passo é preparar o modelo: definir os parâmetros de inicialização e de tuning.
+
+
+```{r}
+
+rf <- makeLearner("classif.randomForest", predict.type = "response", par.vals = list(mtry = 3, ntree = 100, 
+                                                                                     importance = TRUE,
+                                                                                     cutoff = c(0.55,0.45)))
+# parametros de tuning
+parameters <- makeParamSet(
+  makeIntegerParam("ntree",lower = 50, upper = 500),
+  makeIntegerParam("mtry", lower = 2, upper = 4),
+  makeIntegerParam("nodesize", lower = 10, upper = 50)
+)
+
+tune <- makeTuneControlRandom(maxit = 100L)
+
+# cv
+cv <- makeResampleDesc("CV",iters = 10L)
+
+
+rf_tune <- tuneParams(learner = rf, resampling = cv, task = train_task, par.set = parameters, control = tune, 
+                      show.info = TRUE)
+
+```
+
+Agora com os parâmetos de tuning definidos iremos passá-los para a construção do modelo final.
+
+```{r}
+# configurando os hiperparâmetros 
+rf_tuning <- setHyperPars(rf, par.vals = rf_tune$x)
+
+# configurando os parâmetros de tuning 
+rf <- mlr::train(rf_tuning, train_task)
+
+# passando o conjunto de teste para o modelo 
+predict_rf<-predict(rf, test_task)
+
+```
+
+Avaliando a perfomance do modelo.
+
+```{r}
+df <- data.frame(predict_rf$data)
+
+# avaliar os resultados
+library(caret)
+confusionMatrix(df$response, df$truth)
+
+library(pROC)
+auc(response = df$truth, predictor = factor(df$response, ordered = TRUE))
+
+```
+
+Podemos utilizar o conjunto de teste como uma espécie de validação do modelo, utilizaremos o kaggle como uma plataforma para submeter as respostas sugeridas pelo modelo para os dados de teste. O código está comentado porque já realizamos a submissão e não queremos sobrescrever arquivos no diretório.
+
+```{r}
+# passando o conjunto de teste para o modelo
+# data_selected_test <- data_selected[is.na(data_selected$Survived),]
+# 
+# # predição
+# predict_rf<-predict(rf$learner.model, data_selected_test)
+# 
+# df <- data.frame(response = predict_rf)
+# 
+# # Acurácia kaggle -> 0.77990
+#
+# df_predictions <- data.frame(PassengerId = as.numeric(rownames(df)), Survived = df$response)
+# head(df_predictions)
+# tail(df_predictions)
+# 
+# write.csv(df_predictions,file="data/submits/df_predictions_1.csv", row.names=FALSE)
+```
+
+**Etapa adicional**: essa etapa apenas utiliza um outro modelo de fácil interpretação. Se o gestor estiver interessado em entender as regras construidas pelo modelo, poderemos utilizar uma árvore de decisão.
+
+
+```{r}
+
+data_selected_train <- data_selected[!is.na(data_selected$Survived),]
+data_selected_train$Survived <- as.factor(data_selected_train$Survived)
+
+# 70% treinamento 
+size_sample <-  floor(0.7 * nrow(data_selected_train))
+
+set.seed(123)
+# particionamento randômico
+train_ind <- sample(seq_len(nrow(data_selected_train)), size_sample)
+
+# dados de treinamento e teste
+data_train <- data_selected_train[train_ind, ]
+data_test <- data_selected_train[-train_ind, ]
+
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(e1071)
+
+```
+
+Carregamos e preparamos nosso conjunto de dados de treinamento e teste. Agora construíremos nosso modelo e tentaremos primeiro extrair o melhor valor para cp (parâmetro de complexidade).
+
+```{r}
+
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(e1071)
+
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+set.seed(123)
+
+# buscando o melhor valor para cp
+tree <- caret::train(Survived ~., data = data_train, method = "rpart", parms = list(split = "information"), trControl=control,
+          tuneGrid = expand.grid(.cp=(1:50)*0.01))
+tree
+```
+
+De acordo com o modelo o melhor valor de cp é 0.01. Assim poderemos utilizar esse valor para construção do modelo final.
+
+```{r}
+# treinando o modelo a partir do melhor valor para o parâmetro cp
+tree_model <- rpart(Survived ~ ., data = data_train, control = rpart.control(cp=tree$results[c(which(tree$results$Accuracy  == max(tree$results$Accuracy))),]$cp))
+
+prp(tree_model, box.palette = "Reds")
+
+```
+
+Observe as regras que foram utilizadas pelo modelo. Em seguida, iremos realizar a tarefa de predição.
+
+```{r}
+# passando o conjunto de teste para o modelo 
+predict_tree<-predict(tree_model, data_test, type = "class")
+
+df <- data.frame(response = predict_tree)
+
+# avaliar os resultados
+library(caret)
+confusionMatrix(df$response, data_test$Survived)
+
+```
+
+Note que tivemos uma acurácia desejável uma taxa de acerto na classe majoritária cerca de 94,6% aprox. No entanto, o modelo não teve uma boa perfomance na classe minoritária. Podemos suaviazar e estabelecer um melhor trade-off entre FP e FN ao balancer essas classes.
+
+```{r}
+
+rm(list=ls())
+
+load("data/features_selection.RData")
+
+data_selected_train <- data_selected[!is.na(data_selected$Survived),]
+data_selected_train$Survived <- as.factor(data_selected_train$Survived)
+
+library(ROSE)
+
+```
+
+Vamos utilizar o método de over + undersampling para balanceamento de classe. Antes, observe a proporção atual das nossas classes.
+
+```{r}
+prop.table(table(data_selected_train$Survived))
+```
+
+Então iremos balancear utilizando o método "both" da função ovun.sample().
+
+```{r}
+# método de over e undersampling
+balanced_target <- ovun.sample(Survived ~ ., data = data_selected_train, method = "both",N = 950, seed = 1)$data
+data_selected_train <- balanced_target
+```
+
+Observe que agora a proporção entre as classes melhorou significativamente.
+
+```{r}
+prop.table(table(data_selected_train$Survived))
+```
+
+Asssim, podemos refazer os passos anteriores.
+
+```{r}
+# 70% treinamento 
+size_sample <-  floor(0.7 * nrow(data_selected_train))
+
+set.seed(123)
+# particionamento randômico
+train_ind <- sample(seq_len(nrow(data_selected_train)), size_sample)
+
+# dados de treinamento e teste
+data_train <- data_selected_train[train_ind, ]
+data_test <- data_selected_train[-train_ind, ]
+
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(e1071)
+
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+set.seed(123)
+
+# buscando o melhor valor para cp
+tree <- caret::train(Survived ~., data = data_train, method = "rpart", parms = list(split = "information"), trControl=control,
+              tuneGrid = expand.grid(.cp=(1:50)*0.01))
+
+# treinando o modelo a partir do melhor valor para o parâmetro cp
+tree_model <- rpart(Survived ~ ., data = data_train, control = rpart.control(cp=tree$results[c(which(tree$results$Accuracy  == max(tree$results$Accuracy))),]$cp))
+
+prp(tree_model, box.palette = "Reds")
+
+# passando o conjunto de teste para o modelo 
+predict_tree<-predict(tree_model, data_test, type = "class")
+
+df <- data.frame(response = predict_tree)
+
+```
+
+Avaliando os resultados: ocorreu uma melhoria significativa tanto em termos de acurácia como também na taxa de acerto entre sensibilidade e especificidade.
+
+```{r}
+confusionMatrix(df$response, data_test$Survived)
+```
+
